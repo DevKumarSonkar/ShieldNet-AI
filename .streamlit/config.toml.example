@@ -1,0 +1,11 @@
+[server]
+address = "127.0.0.1"
+headless = true
+maxUploadSize = 50
+enableCORS = true
+
+[browser]
+gatherUsageStats = false
+
+[logger]
+level = "info"
