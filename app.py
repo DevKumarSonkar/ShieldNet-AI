@@ -28,6 +28,7 @@ os.chdir(BASE_DIR)
 
 from step1_load_data import COLUMNS, resolve_dataset_path
 from step2_preprocess import ATTACK_MAPPING
+from soc_copilot import answer_copilot_query, generate_forensic_investigation
 
 try:
     from scapy.all import IP, TCP, UDP, ICMP, conf, get_if_list, sniff
@@ -215,6 +216,16 @@ st.markdown("""
 
 .mono {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* Hide Streamlit default running / swimming animation on top right */
+[data-testid="stStatusWidget"],
+div[data-testid="stStatusWidget"],
+.stStatusWidget,
+div:has(> [data-testid="stStatusWidget"]) {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -683,6 +694,8 @@ def init_session_state():
         st.session_state.live_sniff_active = False
     if "live_packet_count" not in st.session_state:
         st.session_state.live_packet_count = 0
+    if "copilot_messages" not in st.session_state:
+        st.session_state.copilot_messages = []
     if "shieldnet_runtime" not in st.session_state and SHIELDNET_AVAILABLE:
         st.session_state.shieldnet_runtime = RuntimeState()
 
@@ -1166,10 +1179,11 @@ with kpi5:
 # -----------------------------------------------------------------------------
 # Operations Center Tab Navigation
 # -----------------------------------------------------------------------------
-tab_live, tab_map, tab_incidents, tab_explain, tab_capture = st.tabs([
+tab_live, tab_map, tab_incidents, tab_copilot, tab_explain, tab_capture = st.tabs([
     "🛰️ Real-Time Stream & Anomaly Monitor",
     "🌍 Global Threat Origin Map",
     "🚨 Actionable SOC Incident Center",
+    "🤖 AI SOC Copilot & Investigator",
     "🧠 AI Explainability & Architecture",
     "📁 Forensic PCAP Analyzer",
 ])
@@ -1490,7 +1504,113 @@ with tab_incidents:
 
 
 # =============================================================================
-# TAB 4: AI Explainability & Architecture (Abstracted from Main View)
+# TAB 4: AI SOC Copilot & Incident Investigator
+# =============================================================================
+with tab_copilot:
+    st.subheader("🤖 AI SOC Copilot & Autonomous Incident Investigator")
+    st.caption("Forensic reasoning engine providing root-cause analysis, plain-English mitigation commands, and conversational incident interrogation.")
+
+    if not st.session_state.soc_incidents:
+        st.info("No security incidents detected yet. Ingest simulated traffic or sniff live packets to activate the AI SOC Investigator.")
+    else:
+        inc_options = {f"{i['incident_id']} - {i['threat_type']} ({i['source_ip']})": i for i in st.session_state.soc_incidents[:30]}
+        selected_inc_key = st.selectbox("Select Incident to Investigate with Copilot:", list(inc_options.keys()))
+        active_incident = inc_options[selected_inc_key]
+
+        # Generate full forensic investigation
+        investigation = generate_forensic_investigation(active_incident)
+
+        col_inv1, col_inv2 = st.columns([3, 2])
+
+        with col_inv1:
+            st.markdown(f"""
+            <div style="background:rgba(15, 23, 42, 0.85); border:1px solid rgba(56, 189, 248, 0.3); border-radius:12px; padding:18px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:1.15rem; font-weight:800; color:#38bdf8">🔍 {investigation['playbook_title']}</span>
+                    <span class="badge badge-critical">{active_incident.get('severity', 'HIGH')}</span>
+                </div>
+                <div style="margin:10px 0; font-size:0.9rem; color:#cbd5e1; line-height:1.5;">
+                    {investigation['attack_intent']}
+                </div>
+                <div style="font-size:0.8rem; color:#94a3b8; display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; border-top:1px solid #1e293b; padding-top:10px;">
+                    <div>• <b>MITRE ATT&CK:</b> <code>{investigation['mitre_technique']}</code></div>
+                    <div>• <b>Vulnerability Context:</b> {investigation['cve_relevance']}</div>
+                    <div>• <b>Attacker Endpoint:</b> <code>{active_incident.get('country_flag', '')} {active_incident.get('source_ip')}</code></div>
+                    <div>• <b>ISP / Autonomous Net:</b> {active_incident.get('isp')}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Executive Incident Briefing
+            with st.expander("📄 Plain-English Executive Incident Briefing", expanded=True):
+                st.markdown(investigation["executive_briefing"])
+
+        with col_inv2:
+            st.markdown("#### ⚡ Copy-Ready Firewall Mitigation Commands")
+            cmds = investigation["commands"]
+
+            st.caption("Windows Firewall (PowerShell / Admin CMD):")
+            st.code(cmds["windows_netsh"], language="powershell")
+
+            st.caption("Linux iptables (Perimeter Drop):")
+            st.code(cmds["linux_iptables"], language="bash")
+
+            st.caption("Linux nftables / Fail2ban:")
+            st.code(cmds["linux_nftables"], language="bash")
+
+            st.caption("NGINX Web Server Deny Rule:")
+            st.code(cmds["nginx_block"], language="nginx")
+
+            if active_incident["source_ip"] not in st.session_state.blocked_ips:
+                if st.button(f"🛡️ Apply Firewall Rule for {active_incident['source_ip']}", type="primary", use_container_width=True):
+                    st.session_state.blocked_ips.add(active_incident["source_ip"])
+                    active_incident["mitigation_status"] = "Mitigated / Blocked"
+                    st.success(f"Blacklisted {active_incident['source_ip']} in active session firewall cache.")
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 💬 Interactive SOC Copilot Dialogue")
+        st.caption("Ask questions about this threat, vulnerability impact, or tactical remediation.")
+
+        # Quick question pills
+        q_cols = st.columns(4)
+        if q_cols[0].button("Why was this detected? ❓", use_container_width=True):
+            ans = answer_copilot_query("Why was this detected?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "Why was this detected?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[1].button("How do I block this? 🛡️", use_container_width=True):
+            ans = answer_copilot_query("How do I block this IP?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "How do I block this IP?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[2].button("What is our risk? ⚠️", use_container_width=True):
+            ans = answer_copilot_query("What is our vulnerability risk?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "What is our vulnerability risk?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[3].button("Show geographic origin 🌍", use_container_width=True):
+            ans = answer_copilot_query("Show geographic origin and ISP", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "Show geographic origin and ISP"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        # Render dialogue messages
+        for msg in st.session_state.copilot_messages[-8:]:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                st.chat_message("assistant").markdown(msg["content"])
+
+        user_q = st.chat_input("Ask SOC Copilot about this incident (e.g., 'What CVE applies?', 'Explain SYN flood mechanics')...")
+        if user_q:
+            ans = answer_copilot_query(user_q, active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": user_q})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+            st.rerun()
+
+
+# =============================================================================
+# TAB 5: AI Explainability & Architecture (Abstracted from Main View)
 # =============================================================================
 with tab_explain:
     st.subheader("🧠 122-Feature ML Pipeline & Explainability Engine")
