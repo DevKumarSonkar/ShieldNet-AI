@@ -120,3 +120,40 @@ def test_port_to_service_mapping():
     assert port_to_service(22) == "ssh"
     assert port_to_service(99999) == "private"
 
+
+def test_copilot_investigation():
+    from soc_copilot import generate_forensic_investigation, answer_copilot_query
+
+    mock_incident = {
+        "incident_id": "INC-1001",
+        "timestamp": "14:20:00",
+        "source_ip": "185.220.101.44",
+        "destination": "10.0.1.10:80",
+        "protocol_service": "TCP / http",
+        "threat_type": "DoS / Neptune Flood",
+        "category": "DoS",
+        "severity": "CRITICAL",
+        "confidence": "99%",
+        "country": "Germany",
+        "city": "Frankfurt",
+        "isp": "Hetzner Tor Exit",
+        "country_flag": "🇩🇪",
+        "raw_attributes": {"count": 250, "serror_rate": 1.0, "flag": "S0"},
+        "triggered_params": [{"name": "SYN Handshake Error Rate"}],
+    }
+
+    inv = generate_forensic_investigation(mock_incident)
+    assert "TCP SYN" in inv["playbook_title"]
+    assert "T1498" in inv["mitre_technique"]
+    assert "netsh" in inv["commands"]["windows_netsh"]
+    assert "iptables" in inv["commands"]["linux_iptables"]
+    assert "EXECUTIVE INCIDENT BRIEFING" in inv["executive_briefing"]
+
+    # Test query handling
+    ans_why = answer_copilot_query("Why was this detected?", mock_incident, [mock_incident])
+    assert "SYN Handshake Error Rate" in ans_why
+    assert "DoS" in ans_why
+
+    ans_block = answer_copilot_query("How do I block this?", mock_incident, [mock_incident])
+    assert "netsh" in ans_block or "iptables" in ans_block
+

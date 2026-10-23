@@ -28,6 +28,7 @@ os.chdir(BASE_DIR)
 
 from step1_load_data import COLUMNS, resolve_dataset_path
 from step2_preprocess import ATTACK_MAPPING
+from soc_copilot import answer_copilot_query, generate_forensic_investigation
 
 try:
     from scapy.all import IP, TCP, UDP, ICMP, conf, get_if_list, sniff
@@ -215,6 +216,108 @@ st.markdown("""
 
 .mono {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+/* Hide Streamlit default running / swimming animation on top right */
+[data-testid="stStatusWidget"],
+div[data-testid="stStatusWidget"],
+.stStatusWidget,
+div:has(> [data-testid="stStatusWidget"]) {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+}
+
+/* Clickable KPI Card Buttons */
+.kpi-btn-wrapper button[kind="secondary"] {
+    background: transparent !important;
+    border: none !important;
+    padding: 0 !important;
+    width: 100% !important;
+    text-align: left !important;
+    cursor: pointer !important;
+}
+.kpi-btn-wrapper > div {
+    width: 100%;
+}
+
+/* Dialog Override */
+[data-testid="stModal"] .stMarkdown {
+    color: #f8fafc;
+}
+
+/* Sidebar Top Spacing Adjustment */
+[data-testid="stSidebarContent"] {
+    padding-top: 1.2rem !important;
+}
+[data-testid="stSidebarUserContent"] {
+    padding-top: 0.5rem !important;
+}
+
+/* KPI clickable card - Fixed uniform dimensions */
+.soc-card-clickable {
+    background: #141c2e;
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 8px;
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+    position: relative;
+    height: 135px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+.soc-card-clickable:hover {
+    border-color: rgba(56, 189, 248, 0.65);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(56, 189, 248, 0.15);
+}
+.soc-card-clickable .soc-card-title {
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.soc-card-clickable .soc-card-value {
+    font-size: 1.85rem;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    line-height: 1.1;
+    margin: 4px 0;
+}
+.soc-card-clickable .soc-card-delta {
+    font-size: 0.74rem;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.soc-card-click-hint {
+    font-size: 0.62rem;
+    color: #475569;
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    letter-spacing: 0.03em;
+}
+
+/* Ensure all KPI action buttons under cards have identical height */
+div[data-testid="stColumn"] > div > div > div > .stButton > button {
+    min-height: 38px;
+    height: 38px;
+    font-size: 0.78rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -683,8 +786,12 @@ def init_session_state():
         st.session_state.live_sniff_active = False
     if "live_packet_count" not in st.session_state:
         st.session_state.live_packet_count = 0
+    if "copilot_messages" not in st.session_state:
+        st.session_state.copilot_messages = []
     if "shieldnet_runtime" not in st.session_state and SHIELDNET_AVAILABLE:
         st.session_state.shieldnet_runtime = RuntimeState()
+    if "open_kpi_dialog" not in st.session_state:
+        st.session_state.open_kpi_dialog = None
 
 init_session_state()
 
@@ -939,10 +1046,6 @@ except Exception as e:
 # Sidebar: User-Friendly Security Controls & Abstraction
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## 🛡️ ShieldNet Security")
-    st.caption("AI-Powered Network Intrusion Prevention System")
-
-    st.markdown("---")
     # Requirement 1: User-friendly Abstraction over AI model parameters
     st.markdown("### 🔒 Defense Stance")
     stance_options = [
@@ -1086,6 +1189,542 @@ def background_capture_worker():
 background_capture_worker()
 
 
+# =============================================================================
+# KPI Detail Dialogs
+# =============================================================================
+
+@st.dialog("🟢 Network Health Index — Detailed Drill-Down", width="large")
+def dialog_health_index(health_score, health_status, health_badge_cls):
+    """Detailed modal for Network Health Index KPI card."""
+    total_w = st.session_state.total_inspected
+    threats_w = st.session_state.threat_count
+    normal_w = st.session_state.normal_count
+    blocked_ips = st.session_state.blocked_ips
+    recent = st.session_state.soc_telemetry[:60]
+
+    # Header summary
+    color = '#10b981' if health_score >= 85 else ('#f59e0b' if health_score >= 60 else '#ef4444')
+    st.markdown(f"""
+    <div style="display:flex; gap:24px; align-items:center; padding:16px; background:rgba(20,28,46,0.9);
+         border-radius:12px; border:1px solid {color}40; margin-bottom:16px;">
+        <div style="text-align:center;">
+            <div style="font-size:3rem; font-weight:900; color:{color}; font-family:monospace;">{health_score}%</div>
+            <div style="font-size:0.75rem; color:#94a3b8;">HEALTH SCORE</div>
+        </div>
+        <div style="flex:1;">
+            <div style="font-size:1.1rem; font-weight:700; color:#f8fafc; margin-bottom:4px;">{health_status}</div>
+            <div style="font-size:0.85rem; color:#94a3b8;">Calculated over a sliding 60-flow inspection window.<br>
+            Unmitigated threats carry <b>full weight</b>; mitigated threats carry <b>25% weight</b>.</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_a, col_b = st.columns([1, 1])
+
+    with col_a:
+        # Gauge chart
+        g = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=health_score,
+            number={"suffix": "%", "font": {"size": 40, "color": "#f8fafc"}},
+            title={"text": "Live Health Gauge", "font": {"size": 13, "color": "#94a3b8"}},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#475569"},
+                "bar": {"color": color, "thickness": 0.28},
+                "bgcolor": "#1e293b", "borderwidth": 0,
+                "steps": [
+                    {"range": [0, 60], "color": "rgba(239,68,68,0.2)"},
+                    {"range": [60, 85], "color": "rgba(245,158,11,0.2)"},
+                    {"range": [85, 100], "color": "rgba(16,185,129,0.2)"},
+                ],
+                "threshold": {"line": {"color": "white", "width": 3}, "thickness": 0.75, "value": health_score},
+            },
+        ))
+        g.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        height=260, margin=dict(l=15, r=15, t=30, b=10))
+        st.plotly_chart(g, use_container_width=True)
+
+        # Health tier table
+        st.markdown("""
+        | Tier | Score Range | Status |
+        |------|------------|--------|
+        | 🟢 Secure | 85–100% | Optimal Operations |
+        | 🟡 Caution | 60–84% | Elevated Risk |
+        | 🔴 Critical | 0–59% | Active Intrusion |
+        """)
+
+    with col_b:
+        # Threat breakdown donut
+        unmitigated = sum(1 for f in recent if f["is_threat"] and f["source_ip"] not in blocked_ips)
+        mitigated = sum(1 for f in recent if f["is_threat"] and f["source_ip"] in blocked_ips)
+        norm_recent = sum(1 for f in recent if not f["is_threat"])
+
+        if recent:
+            pie = go.Figure(go.Pie(
+                labels=["Normal Flows", "Mitigated Threats", "Active Threats"],
+                values=[norm_recent, mitigated, unmitigated],
+                hole=0.55,
+                marker_colors=["#10b981", "#a855f7", "#ef4444"],
+                textfont_size=12,
+            ))
+            pie.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                height=260, margin=dict(l=10, r=10, t=30, b=10),
+                title={"text": "60-Flow Window Composition", "font": {"color": "#94a3b8", "size": 13}},
+                legend=dict(font_color="#cbd5e1"),
+                showlegend=True,
+            )
+            st.plotly_chart(pie, use_container_width=True)
+        else:
+            st.info("No telemetry data yet — ingest flows to populate this chart.")
+
+        # Risk factor summary
+        st.markdown("#### ⚠️ Risk Factors")
+        if unmitigated > 0:
+            st.error(f"🔴 {unmitigated} unmitigated threat(s) in the active window")
+        if mitigated > 0:
+            st.warning(f"🟡 {mitigated} mitigated threat(s) — partial load remains")
+        if not recent:
+            st.success("✅ No active threats in the last 60 flows")
+        st.caption(f"Session totals → Inspected: **{total_w}** | Normal: **{normal_w}** | Threats: **{threats_w}** | Blocked IPs: **{len(blocked_ips)}**")
+
+    # Anomaly score trend
+    if len(recent) >= 3:
+        st.markdown("#### 📈 Anomaly Score Trend (Last 60 Flows)")
+        rev = list(reversed(recent))
+        trend_df = pd.DataFrame([{"Flow #": r["index"], "Threat Score": r["threat_score"],
+                                   "Type": r["pred_label"]} for r in rev])
+        tf = px.area(trend_df, x="Flow #", y="Threat Score", color="Type",
+                     color_discrete_map={"NORMAL": "#10b981", "MALICIOUS": "#ef4444"},
+                     title="Rolling Threat Probability Over Time")
+        tf.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                         height=220, margin=dict(l=10, r=10, t=30, b=10),
+                         yaxis=dict(range=[0, 105], gridcolor="#1e293b"),
+                         xaxis=dict(gridcolor="#1e293b"),
+                         legend=dict(orientation="h", y=1.05))
+        st.plotly_chart(tf, use_container_width=True)
+
+
+@st.dialog("📦 Total Packets Inspected — Pipeline Analytics", width="large")
+def dialog_total_packets(total):
+    """Detailed modal for Total Packets Inspected KPI card."""
+    telemetry = st.session_state.soc_telemetry
+
+    st.markdown(f"""
+    <div style="display:flex; gap:20px; align-items:center; padding:14px 20px; background:rgba(14,28,46,0.9);
+         border-radius:12px; border:1px solid #38bdf840; margin-bottom:16px;">
+        <div style="text-align:center;">
+            <div style="font-size:2.8rem; font-weight:900; color:#38bdf8; font-family:monospace;">{total:,}</div>
+            <div style="font-size:0.72rem; color:#94a3b8;">TOTAL FLOWS INSPECTED</div>
+        </div>
+        <div style="flex:1; font-size:0.88rem; color:#94a3b8;">
+            Every inspected flow is preprocessed through the <b style="color:#38bdf8;">122-feature alignment pipeline</b>.
+            Numerical dimensions are scaled via <b style="color:#38bdf8;">StandardScaler (38 features)</b>;
+            categorical fields are one-hot encoded into <b style="color:#38bdf8;">84 binary columns</b>.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### 🔌 Protocol Distribution")
+        if telemetry:
+            proto_counts = {}
+            for f in telemetry:
+                p = f.get("protocol", "UNKNOWN")
+                proto_counts[p] = proto_counts.get(p, 0) + 1
+            proto_df = pd.DataFrame(list(proto_counts.items()), columns=["Protocol", "Count"])
+            pb = px.bar(proto_df, x="Protocol", y="Count",
+                        color="Protocol", title="Inspected Flows by Protocol",
+                        color_discrete_sequence=["#38bdf8", "#10b981", "#f59e0b", "#f43f5e", "#a855f7"])
+            pb.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                             height=260, margin=dict(l=10, r=10, t=35, b=10),
+                             yaxis=dict(gridcolor="#1e293b"), xaxis=dict(gridcolor="#1e293b"),
+                             showlegend=False)
+            st.plotly_chart(pb, use_container_width=True)
+        else:
+            st.info("No telemetry yet — ingest flows to see protocol breakdown.")
+
+    with col_b:
+        st.markdown("#### 🔬 Service Breakdown")
+        if telemetry:
+            svc_counts = {}
+            for f in telemetry:
+                s = f.get("service", "unknown")
+                svc_counts[s] = svc_counts.get(s, 0) + 1
+            top_svcs = sorted(svc_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            svc_df = pd.DataFrame(top_svcs, columns=["Service", "Count"])
+            sp = px.pie(svc_df, names="Service", values="Count",
+                        hole=0.45, title="Top Network Services",
+                        color_discrete_sequence=px.colors.qualitative.Set2)
+            sp.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                             height=260, margin=dict(l=10, r=10, t=35, b=10),
+                             legend=dict(font_color="#cbd5e1", font_size=10))
+            st.plotly_chart(sp, use_container_width=True)
+        else:
+            st.info("No service data yet.")
+
+    # Feature pipeline spec
+    st.markdown("#### ⚙️ 122-Feature Pipeline Specification")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Input Features", "122", "Aligned dimensions")
+    c2.metric("Numerical (Scaled)", "38", "StandardScaler fitted")
+    c3.metric("One-Hot Encoded", "84", "protocol · service · flag")
+
+    st.markdown("""
+    | Stage | Operation | Output Shape |
+    |-------|-----------|-------------|
+    | Raw Input | NSL-KDD / Live Packet | 41 raw features |
+    | Drop Labels | Remove attack/difficulty columns | 39 raw features |
+    | Categorical OHE | protocol_type, service, flag | +84 binary columns |
+    | Numerical Scaling | StandardScaler (μ=0, σ=1) | 38 scaled dimensions |
+    | Feature Alignment | Zero-fill unseen categories | **122 columns** |
+    | Inference | RandomForestClassifier | Binary: 0=Normal / 1=Threat |
+    """)
+
+    if telemetry:
+        st.markdown("#### 📋 Recent Inspected Flows")
+        recent_df = pd.DataFrame([{
+            "#": f["index"], "Time": f["timestamp"],
+            "Source": f["source"], "Protocol": f["protocol"],
+            "Service": f["service"], "Verdict": f["pred_label"],
+            "Score": f"{f['threat_score']}%",
+        } for f in telemetry[:20]])
+        st.dataframe(recent_df, use_container_width=True, hide_index=True)
+
+
+@st.dialog("✅ Normal Traffic Flows — Legitimate Connection Analysis", width="large")
+def dialog_normal_flows(normal, normal_pct):
+    """Detailed modal for Normal Traffic Flows KPI card."""
+    telemetry = st.session_state.soc_telemetry
+    normal_flows = [f for f in telemetry if not f["is_threat"]]
+
+    st.markdown(f"""
+    <div style="display:flex; gap:20px; align-items:center; padding:14px 20px; background:rgba(16,185,129,0.08);
+         border-radius:12px; border:1px solid #10b98140; margin-bottom:16px;">
+        <div style="text-align:center;">
+            <div style="font-size:2.8rem; font-weight:900; color:#10b981; font-family:monospace;">{normal:,}</div>
+            <div style="font-size:0.72rem; color:#94a3b8;">NORMAL FLOWS</div>
+        </div>
+        <div style="flex:1; font-size:0.88rem; color:#94a3b8;">
+            <b style="color:#10b981;">{normal_pct}</b> of all inspected flows were classified as legitimate traffic.
+            These are flows where the RandomForest model assigned <b style="color:#10b981;">threat probability below the sensitivity threshold</b>.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not normal_flows:
+        st.info("No normal flows recorded yet. Ingest traffic to see legitimate connection analytics.")
+        return
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### 🌐 Normal Flow Service Distribution")
+        svc_counts = {}
+        for f in normal_flows:
+            s = f.get("service", "unknown")
+            svc_counts[s] = svc_counts.get(s, 0) + 1
+        top_svcs = sorted(svc_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        svc_df = pd.DataFrame(top_svcs, columns=["Service", "Flows"])
+        bar_n = px.bar(svc_df, x="Flows", y="Service", orientation="h",
+                       color="Flows", color_continuous_scale="Greens",
+                       title="Top Services in Normal Traffic")
+        bar_n.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            height=280, margin=dict(l=10, r=10, t=35, b=10),
+                            coloraxis_showscale=False,
+                            yaxis=dict(gridcolor="#1e293b"),
+                            xaxis=dict(gridcolor="#1e293b"))
+        st.plotly_chart(bar_n, use_container_width=True)
+
+    with col_b:
+        st.markdown("#### 🔌 Protocol Split (Normal Flows)")
+        proto_counts = {}
+        for f in normal_flows:
+            p = f.get("protocol", "UNKNOWN")
+            proto_counts[p] = proto_counts.get(p, 0) + 1
+        p_df = pd.DataFrame(list(proto_counts.items()), columns=["Protocol", "Count"])
+        pp = px.pie(p_df, names="Protocol", values="Count", hole=0.5,
+                    title="Protocol Split",
+                    color_discrete_sequence=["#10b981", "#34d399", "#6ee7b7"])
+        pp.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                         height=280, margin=dict(l=10, r=10, t=35, b=10),
+                         legend=dict(font_color="#cbd5e1"))
+        st.plotly_chart(pp, use_container_width=True)
+
+    # Top source IPs
+    st.markdown("#### 🏠 Top Normal Traffic Sources")
+    src_counts = {}
+    for f in normal_flows:
+        ip = f.get("source_ip", "unknown")
+        src_counts[ip] = src_counts.get(ip, 0) + 1
+    top_src = sorted(src_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+    src_df = pd.DataFrame(top_src, columns=["Source IP", "Normal Flows"])
+    st.dataframe(src_df, use_container_width=True, hide_index=True)
+
+    # Confidence score distribution
+    st.markdown("#### 📊 Normal Flow Confidence Scores")
+    scores = [f["threat_score"] for f in normal_flows[:100]]
+    if scores:
+        score_df = pd.DataFrame({"Threat Score (%)": scores})
+        hist = px.histogram(score_df, x="Threat Score (%)", nbins=20,
+                            title="Distribution of Threat Scores for Normal Flows",
+                            color_discrete_sequence=["#10b981"])
+        hist.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           height=220, margin=dict(l=10, r=10, t=35, b=10),
+                           yaxis=dict(gridcolor="#1e293b"), xaxis=dict(gridcolor="#1e293b"))
+        st.plotly_chart(hist, use_container_width=True)
+
+
+@st.dialog("🚨 Active Threats Detected — Incident Intelligence", width="large")
+def dialog_active_threats(threats):
+    """Detailed modal for Active Threats Detected KPI card."""
+    incidents = st.session_state.soc_incidents
+    threat_flows = [f for f in st.session_state.soc_telemetry if f["is_threat"]]
+    blocked_ips = st.session_state.blocked_ips
+
+    pending = sum(1 for i in incidents if i.get("mitigation_status") == "Pending Action")
+    mitigated = sum(1 for i in incidents if i.get("mitigation_status") != "Pending Action")
+
+    st.markdown(f"""
+    <div style="display:flex; gap:20px; align-items:center; padding:14px 20px; background:rgba(244,63,94,0.08);
+         border-radius:12px; border:1px solid #f43f5e40; margin-bottom:16px;">
+        <div style="text-align:center;">
+            <div style="font-size:2.8rem; font-weight:900; color:#f43f5e; font-family:monospace;">{threats:,}</div>
+            <div style="font-size:0.72rem; color:#94a3b8;">THREATS DETECTED</div>
+        </div>
+        <div style="flex:1;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:0.88rem;">
+                <div style="color:#f59e0b;">⏳ Pending Action: <b>{pending}</b></div>
+                <div style="color:#10b981;">✅ Mitigated: <b>{mitigated}</b></div>
+                <div style="color:#94a3b8;">🔒 Blocked IPs: <b>{len(blocked_ips)}</b></div>
+                <div style="color:#94a3b8;">📋 Total Incidents: <b>{len(incidents)}</b></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not incidents:
+        st.info("No threats detected yet. Ingest traffic to see incident intelligence.")
+        return
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        st.markdown("#### 🗂️ Threat Category Breakdown")
+        cat_counts = {}
+        for i in incidents:
+            c = i.get("category", "Unknown")
+            cat_counts[c] = cat_counts.get(c, 0) + 1
+        cat_df = pd.DataFrame(list(cat_counts.items()), columns=["Category", "Count"])
+        cat_pie = px.pie(cat_df, names="Category", values="Count", hole=0.5,
+                         title="Attack Category Distribution",
+                         color_discrete_map={"DoS": "#ef4444", "Probe": "#f59e0b",
+                                             "R2L": "#a855f7", "U2R": "#f43f5e",
+                                             "Zero-Day": "#38bdf8"})
+        cat_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              height=280, margin=dict(l=10, r=10, t=35, b=10),
+                              legend=dict(font_color="#cbd5e1"))
+        st.plotly_chart(cat_pie, use_container_width=True)
+
+    with col_b:
+        st.markdown("#### 🔥 Severity Distribution")
+        sev_counts = {}
+        for i in incidents:
+            s = i.get("severity", "UNKNOWN")
+            sev_counts[s] = sev_counts.get(s, 0) + 1
+        sev_df = pd.DataFrame(list(sev_counts.items()), columns=["Severity", "Count"])
+        sev_bar = px.bar(sev_df, x="Severity", y="Count",
+                         color="Severity",
+                         color_discrete_map={"CRITICAL": "#ef4444", "HIGH": "#f59e0b",
+                                             "MEDIUM": "#38bdf8", "LOW": "#10b981",
+                                             "INFORMATIONAL": "#94a3b8"},
+                         title="Severity Level Counts")
+        sev_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              height=280, margin=dict(l=10, r=10, t=35, b=10),
+                              yaxis=dict(gridcolor="#1e293b"), xaxis=dict(gridcolor="#1e293b"),
+                              showlegend=False)
+        st.plotly_chart(sev_bar, use_container_width=True)
+
+    # Threat score trend
+    if threat_flows:
+        st.markdown("#### 📈 Threat Score Timeline")
+        rev_threats = list(reversed(threat_flows[:50]))
+        ts_df = pd.DataFrame([{"Flow #": f["index"], "Score": f["threat_score"],
+                                "Type": f["threat_title"]} for f in rev_threats])
+        ts_fig = px.scatter(ts_df, x="Flow #", y="Score", color="Type",
+                            size="Score", title="Threat Events by Anomaly Score",
+                            hover_data=["Type"])
+        ts_fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                             height=240, margin=dict(l=10, r=10, t=35, b=10),
+                             yaxis=dict(range=[0, 105], gridcolor="#1e293b"),
+                             xaxis=dict(gridcolor="#1e293b"),
+                             legend=dict(font_color="#cbd5e1", font_size=10))
+        st.plotly_chart(ts_fig, use_container_width=True)
+
+    # Recent incident log
+    st.markdown("#### 📋 Recent Incident Log")
+    inc_df = pd.DataFrame([{
+        "ID": i["incident_id"],
+        "Time": i["timestamp"],
+        "Source IP": i["source_ip"],
+        "Country": f"{i.get('country_flag', '')} {i.get('country', 'Unknown')}",
+        "Threat": i["threat_type"],
+        "Severity": i["severity"],
+        "Status": i["mitigation_status"],
+    } for i in incidents[:20]])
+    st.dataframe(inc_df, use_container_width=True, hide_index=True)
+
+
+@st.dialog("🔒 Attacker IPs Blacklisted — Firewall Registry", width="large")
+def dialog_blocked_ips(blocked, mitigated_pct):
+    """Detailed modal for Attacker IPs Blacklisted KPI card."""
+    blocked_ips = st.session_state.blocked_ips
+    incidents = st.session_state.soc_incidents
+    threats_total = st.session_state.threat_count
+
+    st.markdown(f"""
+    <div style="display:flex; gap:20px; align-items:center; padding:14px 20px; background:rgba(168,85,247,0.08);
+         border-radius:12px; border:1px solid #a855f740; margin-bottom:16px;">
+        <div style="text-align:center;">
+            <div style="font-size:2.8rem; font-weight:900; color:#a855f7; font-family:monospace;">{blocked:,}</div>
+            <div style="font-size:0.72rem; color:#94a3b8;">BLOCKED IPs</div>
+        </div>
+        <div style="flex:1; font-size:0.88rem; color:#94a3b8;">
+            <b style="color:#a855f7;">{mitigated_pct}</b> of detected threats have been mitigated.
+            Blacklisted IPs are held in the <b style="color:#a855f7;">active session firewall deny cache</b>.
+            All subsequent packets from these endpoints are automatically flagged.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if not blocked_ips:
+        st.info("No IPs blacklisted yet. Use 'Mitigate All' in the sidebar or apply mitigation from the Incident Center.")
+        mitig_rate = 0.0
+    else:
+        mitig_rate = blocked / max(threats_total, 1) * 100
+
+    # Coverage gauge
+    cov_gauge = go.Figure(go.Indicator(
+        mode="gauge+number+delta",
+        value=mitig_rate,
+        number={"suffix": "%", "font": {"size": 36, "color": "#f8fafc"}},
+        delta={"reference": 100, "valueformat": ".1f"},
+        title={"text": "Mitigation Coverage", "font": {"size": 13, "color": "#94a3b8"}},
+        gauge={
+            "axis": {"range": [0, 100], "tickcolor": "#475569"},
+            "bar": {"color": "#a855f7", "thickness": 0.28},
+            "bgcolor": "#1e293b", "borderwidth": 0,
+            "steps": [
+                {"range": [0, 50], "color": "rgba(239,68,68,0.15)"},
+                {"range": [50, 80], "color": "rgba(245,158,11,0.15)"},
+                {"range": [80, 100], "color": "rgba(168,85,247,0.15)"},
+            ],
+        },
+    ))
+    cov_gauge.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                            height=220, margin=dict(l=15, r=15, t=30, b=10))
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        st.plotly_chart(cov_gauge, use_container_width=True)
+
+    with col_b:
+        st.markdown("#### 🌍 Origin Country Breakdown")
+        # Pull geo data from incidents
+        country_counts = {}
+        for inc in incidents:
+            if inc["source_ip"] in blocked_ips:
+                c = inc.get("country", "Unknown")
+                flag = inc.get("country_flag", "🌐")
+                key = f"{flag} {c}"
+                country_counts[key] = country_counts.get(key, 0) + 1
+
+        if country_counts:
+            c_df = pd.DataFrame(list(country_counts.items()), columns=["Country", "Blocked IPs"])
+            c_bar = px.bar(c_df.sort_values("Blocked IPs", ascending=False),
+                           x="Blocked IPs", y="Country", orientation="h",
+                           color="Blocked IPs", color_continuous_scale="Purples",
+                           title="Attacker Origins")
+            c_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                height=220, margin=dict(l=10, r=10, t=35, b=10),
+                                coloraxis_showscale=False,
+                                yaxis=dict(gridcolor="#1e293b"),
+                                xaxis=dict(gridcolor="#1e293b"))
+            st.plotly_chart(c_bar, use_container_width=True)
+        else:
+            st.info("Geographic data will appear once threats are mitigated.")
+
+    # Full blocked IP registry table
+    st.markdown("#### 🗃️ Active Firewall Deny Cache")
+    if blocked_ips:
+        blocked_records = []
+        seen_ips = set()
+        for inc in incidents:
+            if inc["source_ip"] in blocked_ips and inc["source_ip"] not in seen_ips:
+                seen_ips.add(inc["source_ip"])
+                blocked_records.append({
+                    "Source IP": inc["source_ip"],
+                    "Country": f"{inc.get('country_flag', '🌐')} {inc.get('country', 'Unknown')}",
+                    "ISP": inc.get("isp", "Unknown"),
+                    "Threat Type": inc["threat_type"],
+                    "Severity": inc["severity"],
+                    "Mitigated At": inc["timestamp"],
+                })
+        # Add any IPs not in incident list
+        for ip in blocked_ips:
+            if ip not in seen_ips:
+                blocked_records.append({"Source IP": ip, "Country": "N/A", "ISP": "N/A",
+                                        "Threat Type": "Manual Block", "Severity": "N/A", "Mitigated At": "—"})
+
+        bl_df = pd.DataFrame(blocked_records)
+        st.dataframe(bl_df, use_container_width=True, hide_index=True)
+
+        # Firewall commands
+        st.markdown("#### 💻 Bulk Firewall Block Commands")
+        iptables_cmds = "\n".join([f"iptables -A INPUT -s {ip} -j DROP" for ip in list(blocked_ips)[:20]])
+        win_cmds = "\n".join([f'netsh advfirewall firewall add rule name="Block_{ip}" dir=in action=block remoteip={ip}' for ip in list(blocked_ips)[:5]])
+        tab_ipt, tab_win = st.tabs(["Linux iptables", "Windows Firewall"])
+        with tab_ipt:
+            st.code(iptables_cmds, language="bash")
+        with tab_win:
+            st.code(win_cmds, language="powershell")
+    else:
+        st.markdown("> No IPs currently in the deny cache. Apply mitigation from the SOC Incident Center or sidebar.")
+
+
+# =============================================================================
+# Dialog Trigger Logic (must run before rendering cards)
+# =============================================================================
+_open_dialog = st.session_state.get("open_kpi_dialog", None)
+
+# Pre-compute values for dialogs
+_health_score_d, _health_status_d, _health_badge_cls_d, _ = compute_network_health()
+_total_d = st.session_state.total_inspected
+_normal_d = st.session_state.normal_count
+_threats_d = st.session_state.threat_count
+_blocked_d = len(st.session_state.blocked_ips)
+_normal_pct_d = f"{(_normal_d / _total_d * 100):.1f}%" if _total_d > 0 else "100.0%"
+_mitigated_pct_d = f"{(_blocked_d / max(_threats_d, 1) * 100):.1f}%" if _threats_d > 0 else "100.0%"
+
+if _open_dialog == "health":
+    st.session_state.open_kpi_dialog = None
+    dialog_health_index(_health_score_d, _health_status_d, _health_badge_cls_d)
+elif _open_dialog == "packets":
+    st.session_state.open_kpi_dialog = None
+    dialog_total_packets(_total_d)
+elif _open_dialog == "normal":
+    st.session_state.open_kpi_dialog = None
+    dialog_normal_flows(_normal_d, _normal_pct_d)
+elif _open_dialog == "threats":
+    st.session_state.open_kpi_dialog = None
+    dialog_active_threats(_threats_d)
+elif _open_dialog == "blocked":
+    st.session_state.open_kpi_dialog = None
+    dialog_blocked_ips(_blocked_d, _mitigated_pct_d)
+
+
 # -----------------------------------------------------------------------------
 # Main Header Banner & Top KPI Cards
 # -----------------------------------------------------------------------------
@@ -1118,58 +1757,80 @@ mitigated_pct = f"{(blocked / max(threats, 1) * 100):.1f}%" if threats > 0 else 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
 with kpi1:
+    health_color = '#10b981' if health_score >= 85 else ('#f59e0b' if health_score >= 60 else '#ef4444')
     st.markdown(f"""
-    <div class="soc-card" style="border-top:3px solid {'#10b981' if health_score >= 85 else ('#f59e0b' if health_score >= 60 else '#ef4444')}">
+    <div class="soc-card-clickable" style="border-top:3px solid {health_color}">
         <div class="soc-card-title">Network Health Index</div>
-        <div class="soc-card-value" style="color:{'#10b981' if health_score >= 85 else ('#f59e0b' if health_score >= 60 else '#ef4444')}">{health_score}%</div>
+        <div class="soc-card-value" style="color:{health_color}">{health_score}%</div>
         <div class="soc-card-delta" style="color:#94a3b8">Sliding 60-Flow Window</div>
     </div>
     """, unsafe_allow_html=True)
+    if st.button("View Health Details", key="btn_health", use_container_width=True,
+                 help="Click to see Network Health Index drill-down"):
+        st.session_state.open_kpi_dialog = "health"
+        st.rerun()
 
 with kpi2:
     st.markdown(f"""
-    <div class="soc-card" style="border-top:3px solid #38bdf8">
+    <div class="soc-card-clickable" style="border-top:3px solid #38bdf8">
         <div class="soc-card-title">Total Packets Inspected</div>
         <div class="soc-card-value">{total:,}</div>
         <div class="soc-card-delta" style="color:#38bdf8">122-Feature Aligned</div>
     </div>
     """, unsafe_allow_html=True)
+    if st.button("View Packet Analytics", key="btn_packets", use_container_width=True,
+                 help="Click to see pipeline analytics for all inspected packets"):
+        st.session_state.open_kpi_dialog = "packets"
+        st.rerun()
 
 with kpi3:
     st.markdown(f"""
-    <div class="soc-card" style="border-top:3px solid #10b981">
+    <div class="soc-card-clickable" style="border-top:3px solid #10b981">
         <div class="soc-card-title">Normal Traffic Flows</div>
         <div class="soc-card-value">{normal:,}</div>
         <div class="soc-card-delta" style="color:#10b981">{normal_pct} of Inspected</div>
     </div>
     """, unsafe_allow_html=True)
+    if st.button("View Normal Flow Details", key="btn_normal", use_container_width=True,
+                 help="Click to see legitimate connection analytics"):
+        st.session_state.open_kpi_dialog = "normal"
+        st.rerun()
 
 with kpi4:
     st.markdown(f"""
-    <div class="soc-card" style="border-top:3px solid #f43f5e">
+    <div class="soc-card-clickable" style="border-top:3px solid #f43f5e">
         <div class="soc-card-title">Active Threats Detected</div>
         <div class="soc-card-value" style="color:#f43f5e">{threats:,}</div>
         <div class="soc-card-delta" style="color:#f43f5e">{threats} Anomaly Incidents</div>
     </div>
     """, unsafe_allow_html=True)
+    if st.button("View Threat Intelligence", key="btn_threats", use_container_width=True,
+                 help="Click to see threat intelligence and incident breakdown"):
+        st.session_state.open_kpi_dialog = "threats"
+        st.rerun()
 
 with kpi5:
     st.markdown(f"""
-    <div class="soc-card" style="border-top:3px solid #a855f7">
+    <div class="soc-card-clickable" style="border-top:3px solid #a855f7">
         <div class="soc-card-title">Attacker IPs Blacklisted</div>
         <div class="soc-card-value" style="color:#a855f7">{blocked:,}</div>
         <div class="soc-card-delta" style="color:#a855f7">{mitigated_pct} Mitigated</div>
     </div>
     """, unsafe_allow_html=True)
+    if st.button("View Firewall Registry", key="btn_blocked", use_container_width=True,
+                 help="Click to see blocked IP registry and mitigation details"):
+        st.session_state.open_kpi_dialog = "blocked"
+        st.rerun()
 
 
 # -----------------------------------------------------------------------------
 # Operations Center Tab Navigation
 # -----------------------------------------------------------------------------
-tab_live, tab_map, tab_incidents, tab_explain, tab_capture = st.tabs([
+tab_live, tab_map, tab_incidents, tab_copilot, tab_explain, tab_capture = st.tabs([
     "🛰️ Real-Time Stream & Anomaly Monitor",
     "🌍 Global Threat Origin Map",
     "🚨 Actionable SOC Incident Center",
+    "🤖 AI SOC Copilot & Investigator",
     "🧠 AI Explainability & Architecture",
     "📁 Forensic PCAP Analyzer",
 ])
@@ -1490,7 +2151,113 @@ with tab_incidents:
 
 
 # =============================================================================
-# TAB 4: AI Explainability & Architecture (Abstracted from Main View)
+# TAB 4: AI SOC Copilot & Incident Investigator
+# =============================================================================
+with tab_copilot:
+    st.subheader("🤖 AI SOC Copilot & Autonomous Incident Investigator")
+    st.caption("Forensic reasoning engine providing root-cause analysis, plain-English mitigation commands, and conversational incident interrogation.")
+
+    if not st.session_state.soc_incidents:
+        st.info("No security incidents detected yet. Ingest simulated traffic or sniff live packets to activate the AI SOC Investigator.")
+    else:
+        inc_options = {f"{i['incident_id']} - {i['threat_type']} ({i['source_ip']})": i for i in st.session_state.soc_incidents[:30]}
+        selected_inc_key = st.selectbox("Select Incident to Investigate with Copilot:", list(inc_options.keys()))
+        active_incident = inc_options[selected_inc_key]
+
+        # Generate full forensic investigation
+        investigation = generate_forensic_investigation(active_incident)
+
+        col_inv1, col_inv2 = st.columns([3, 2])
+
+        with col_inv1:
+            st.markdown(f"""
+            <div style="background:rgba(15, 23, 42, 0.85); border:1px solid rgba(56, 189, 248, 0.3); border-radius:12px; padding:18px; margin-bottom:14px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:1.15rem; font-weight:800; color:#38bdf8">🔍 {investigation['playbook_title']}</span>
+                    <span class="badge badge-critical">{active_incident.get('severity', 'HIGH')}</span>
+                </div>
+                <div style="margin:10px 0; font-size:0.9rem; color:#cbd5e1; line-height:1.5;">
+                    {investigation['attack_intent']}
+                </div>
+                <div style="font-size:0.8rem; color:#94a3b8; display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; border-top:1px solid #1e293b; padding-top:10px;">
+                    <div>• <b>MITRE ATT&CK:</b> <code>{investigation['mitre_technique']}</code></div>
+                    <div>• <b>Vulnerability Context:</b> {investigation['cve_relevance']}</div>
+                    <div>• <b>Attacker Endpoint:</b> <code>{active_incident.get('country_flag', '')} {active_incident.get('source_ip')}</code></div>
+                    <div>• <b>ISP / Autonomous Net:</b> {active_incident.get('isp')}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Executive Incident Briefing
+            with st.expander("📄 Plain-English Executive Incident Briefing", expanded=True):
+                st.markdown(investigation["executive_briefing"])
+
+        with col_inv2:
+            st.markdown("#### ⚡ Copy-Ready Firewall Mitigation Commands")
+            cmds = investigation["commands"]
+
+            st.caption("Windows Firewall (PowerShell / Admin CMD):")
+            st.code(cmds["windows_netsh"], language="powershell")
+
+            st.caption("Linux iptables (Perimeter Drop):")
+            st.code(cmds["linux_iptables"], language="bash")
+
+            st.caption("Linux nftables / Fail2ban:")
+            st.code(cmds["linux_nftables"], language="bash")
+
+            st.caption("NGINX Web Server Deny Rule:")
+            st.code(cmds["nginx_block"], language="nginx")
+
+            if active_incident["source_ip"] not in st.session_state.blocked_ips:
+                if st.button(f"🛡️ Apply Firewall Rule for {active_incident['source_ip']}", type="primary", use_container_width=True):
+                    st.session_state.blocked_ips.add(active_incident["source_ip"])
+                    active_incident["mitigation_status"] = "Mitigated / Blocked"
+                    st.success(f"Blacklisted {active_incident['source_ip']} in active session firewall cache.")
+                    st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 💬 Interactive SOC Copilot Dialogue")
+        st.caption("Ask questions about this threat, vulnerability impact, or tactical remediation.")
+
+        # Quick question pills
+        q_cols = st.columns(4)
+        if q_cols[0].button("Why was this detected? ❓", use_container_width=True):
+            ans = answer_copilot_query("Why was this detected?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "Why was this detected?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[1].button("How do I block this? 🛡️", use_container_width=True):
+            ans = answer_copilot_query("How do I block this IP?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "How do I block this IP?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[2].button("What is our risk? ⚠️", use_container_width=True):
+            ans = answer_copilot_query("What is our vulnerability risk?", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "What is our vulnerability risk?"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        if q_cols[3].button("Show geographic origin 🌍", use_container_width=True):
+            ans = answer_copilot_query("Show geographic origin and ISP", active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": "Show geographic origin and ISP"})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+
+        # Render dialogue messages
+        for msg in st.session_state.copilot_messages[-8:]:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                st.chat_message("assistant").markdown(msg["content"])
+
+        user_q = st.chat_input("Ask SOC Copilot about this incident (e.g., 'What CVE applies?', 'Explain SYN flood mechanics')...")
+        if user_q:
+            ans = answer_copilot_query(user_q, active_incident, st.session_state.soc_incidents)
+            st.session_state.copilot_messages.append({"role": "user", "content": user_q})
+            st.session_state.copilot_messages.append({"role": "copilot", "content": ans})
+            st.rerun()
+
+
+# =============================================================================
+# TAB 5: AI Explainability & Architecture (Abstracted from Main View)
 # =============================================================================
 with tab_explain:
     st.subheader("🧠 122-Feature ML Pipeline & Explainability Engine")
